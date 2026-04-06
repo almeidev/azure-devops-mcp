@@ -63,6 +63,7 @@ function trimPullRequestThread(thread: GitPullRequestCommentThread) {
     lastUpdatedDate: thread.lastUpdatedDate,
     status: thread.status,
     comments: trimComments(thread.comments),
+    threadContext: thread.threadContext,
   };
 }
 
@@ -139,7 +140,7 @@ function configureRepoTools(server: McpServer, tokenProvider: () => Promise<stri
       sourceRefName: z.string().describe("The source branch name for the pull request, e.g., 'refs/heads/feature-branch'."),
       targetRefName: z.string().describe("The target branch name for the pull request, e.g., 'refs/heads/main'."),
       title: z.string().describe("The title of the pull request."),
-      description: z.string().optional().describe("The description of the pull request. Optional."),
+      description: z.string().max(4000).optional().describe("The description of the pull request. Must not be longer than 4000 characters. Optional."),
       isDraft: z.boolean().optional().default(false).describe("Indicates whether the pull request is a draft. Defaults to false."),
       workItems: z.string().optional().describe("Work item IDs to associate with the pull request, space-separated."),
       forkSourceRepositoryId: z.string().optional().describe("The ID of the fork repository that the pull request originates from. Optional, used when creating a pull request from a fork."),
@@ -278,7 +279,7 @@ function configureRepoTools(server: McpServer, tokenProvider: () => Promise<stri
       repositoryId: z.string().describe("The ID of the repository where the pull request exists."),
       pullRequestId: z.number().describe("The ID of the pull request to update."),
       title: z.string().optional().describe("The new title for the pull request."),
-      description: z.string().optional().describe("The new description for the pull request."),
+      description: z.string().max(4000).optional().describe("The new description for the pull request. Must not be longer than 4000 characters."),
       isDraft: z.boolean().optional().describe("Whether the pull request should be a draft."),
       targetRefName: z.string().optional().describe("The new target branch name (e.g., 'refs/heads/main')."),
       status: z.enum(["Active", "Abandoned"]).optional().describe("The new status of the pull request. Can be 'Active' or 'Abandoned'."),
@@ -930,10 +931,11 @@ function configureRepoTools(server: McpServer, tokenProvider: () => Promise<stri
 
   server.tool(
     REPO_TOOLS.search_commits,
-    "Searches for commits in a repository",
+    "Search for commits in a repository with comprehensive filtering capabilities. Supports searching by description/comment text, time range, author, committer, specific commit IDs, and more. This is the unified tool for all commit search operations.",
     {
       project: z.string().describe("Project name or ID"),
       repository: z.string().describe("Repository name or ID"),
+      // Existing parameters
       fromCommit: z.string().optional().describe("Starting commit ID"),
       toCommit: z.string().optional().describe("Ending commit ID"),
       version: z.string().optional().describe("The name of the branch, tag or commit to filter commits by"),
@@ -946,11 +948,82 @@ function configureRepoTools(server: McpServer, tokenProvider: () => Promise<stri
       top: z.number().optional().default(10).describe("Maximum number of commits to return"),
       includeLinks: z.boolean().optional().default(false).describe("Include commit links"),
       includeWorkItems: z.boolean().optional().default(false).describe("Include associated work items"),
+      // Enhanced search parameters
+      searchText: z.string().optional().describe("Search text to filter commits by description/comment. Supports partial matching."),
+      author: z.string().optional().describe("Filter commits by author email or display name"),
+      authorEmail: z.string().optional().describe("Filter commits by exact author email address"),
+      committer: z.string().optional().describe("Filter commits by committer email or display name"),
+      committerEmail: z.string().optional().describe("Filter commits by exact committer email address"),
+      fromDate: z.string().optional().describe("Filter commits from this date (ISO 8601 format, e.g., '2024-01-01T00:00:00Z')"),
+      toDate: z.string().optional().describe("Filter commits to this date (ISO 8601 format, e.g., '2024-12-31T23:59:59Z')"),
+      commitIds: z.array(z.string()).optional().describe("Array of specific commit IDs to retrieve. When provided, other filters are ignored except top/skip."),
+      historySimplificationMode: z.enum(["FirstParent", "SimplifyMerges", "FullHistory", "FullHistorySimplifyMerges"]).optional().describe("How to simplify the commit history"),
     },
-    async ({ project, repository, fromCommit, toCommit, version, versionType, skip, top, includeLinks, includeWorkItems }) => {
+    async ({
+      project,
+      repository,
+      fromCommit,
+      toCommit,
+      version,
+      versionType,
+      skip,
+      top,
+      includeLinks,
+      includeWorkItems,
+      searchText,
+      author,
+      authorEmail,
+      committer,
+      committerEmail,
+      fromDate,
+      toDate,
+      commitIds,
+      historySimplificationMode,
+    }) => {
       try {
         const connection = await connectionProvider();
         const gitApi = await connection.getGitApi();
+
+        // If specific commit IDs are provided, use getCommits with commit ID filtering
+        if (commitIds && commitIds.length > 0) {
+          const commits = [];
+          const batchSize = Math.min(top || 10, commitIds.length);
+          const startIndex = skip || 0;
+          const endIndex = Math.min(startIndex + batchSize, commitIds.length);
+
+          // Process commits in the requested range
+          const requestedCommitIds = commitIds.slice(startIndex, endIndex);
+
+          // Use getCommits for each commit ID to maintain consistency
+          for (const commitId of requestedCommitIds) {
+            try {
+              const searchCriteria: GitQueryCommitsCriteria = {
+                includeLinks: includeLinks,
+                includeWorkItems: includeWorkItems,
+                fromCommitId: commitId,
+                toCommitId: commitId,
+              };
+
+              const commitResults = await gitApi.getCommits(repository, searchCriteria, project, 0, 1);
+
+              if (commitResults && commitResults.length > 0) {
+                commits.push(commitResults[0]);
+              }
+            } catch (error) {
+              // Log error but continue with other commits
+              console.warn(`Failed to retrieve commit ${commitId}: ${error instanceof Error ? error.message : String(error)}`);
+              // Add error information to result instead of failing completely
+              commits.push({
+                commitId: commitId,
+                error: `Failed to retrieve: ${error instanceof Error ? error.message : String(error)}`,
+              });
+            }
+          }
+
+          return {
+            content: [{ type: "text", text: JSON.stringify(commits, null, 2) }],
+          };
+        }
 
         const searchCriteria: GitQueryCommitsCriteria = {
           fromCommitId: fromCommit,
@@ -958,6 +1031,26 @@ function configureRepoTools(server: McpServer, tokenProvider: () => Promise<stri
           includeLinks: includeLinks,
           includeWorkItems: includeWorkItems,
         };
+
+        // Add author filter
+        if (author) {
+          searchCriteria.author = author;
+        }
+
+        // Add date range filters (ADO API expects ISO string format)
+        if (fromDate) {
+          searchCriteria.fromDate = fromDate;
+        }
+        if (toDate) {
+          searchCriteria.toDate = toDate;
+        }
+
+        // Add history simplification if specified
+        if (historySimplificationMode) {
+          // Note: This parameter might not be directly supported by all ADO API versions
+          // but we'll include it in the criteria for forward compatibility
+          (searchCriteria as any).historySimplificationMode = historySimplificationMode;
+        }
 
         if (version) {
           const itemVersion: GitVersionDescriptor = {
@@ -967,16 +1060,35 @@ function configureRepoTools(server: McpServer, tokenProvider: () => Promise<stri
           searchCriteria.itemVersion = itemVersion;
         }
 
-        const commits = await gitApi.getCommits(
-          repository,
-          searchCriteria,
-          project,
-          skip, // skip
-          top
-        );
+        const commits = await gitApi.getCommits(repository, searchCriteria, project, skip, top);
+
+        // Additional client-side filtering for enhanced search capabilities
+        let filteredCommits = commits;
+
+        // Filter by search text in commit message if not handled by API
+        if (searchText && filteredCommits) {
+          filteredCommits = filteredCommits.filter((commit) => commit.comment?.toLowerCase().includes(searchText.toLowerCase()));
+        }
+
+        // Filter by author email if specified
+        if (authorEmail && filteredCommits) {
+          filteredCommits = filteredCommits.filter((commit) => commit.author?.email?.toLowerCase() === authorEmail.toLowerCase());
+        }
+
+        // Filter by committer if specified
+        if (committer && filteredCommits) {
+          filteredCommits = filteredCommits.filter(
+            (commit) => commit.committer?.name?.toLowerCase().includes(committer.toLowerCase()) || commit.committer?.email?.toLowerCase().includes(committer.toLowerCase())
+          );
+        }
+
+        // Filter by committer email if specified
+        if (committerEmail && filteredCommits) {
+          filteredCommits = filteredCommits.filter((commit) => commit.committer?.email?.toLowerCase() === committerEmail.toLowerCase());
+        }
 
         return {
-          content: [{ type: "text", text: JSON.stringify(commits, null, 2) }],
+          content: [{ type: "text", text: JSON.stringify(filteredCommits, null, 2) }],
         };
       } catch (error) {
         return {

@@ -5,7 +5,7 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import * as azdev from "azure-devops-node-api";
+import { getBearerHandler, getBasicHandler, WebApi } from "azure-devops-node-api";
 import yargs from "yargs";
 import { hideBin } from "yargs/helpers";
 
@@ -44,9 +44,9 @@ const argv = yargs(hideBin(process.argv))
   })
   .option("authentication", {
     alias: "a",
-    describe: "Type of authentication to use. Supported values are 'interactive', 'azcli', 'env', and 'pat' (default: 'interactive')",
+    describe: "Type of authentication to use",
     type: "string",
-    choices: ["interactive", "azcli", "env", "pat"],
+    choices: ["interactive", "azcli", "env", "envvar", "pat"],
     default: defaultAuthenticationType,
   })
   .option("tenant", {
@@ -65,14 +65,14 @@ const orgUrl = process.env.SERVER_URL
 const domainsManager = new DomainsManager(argv.domains);
 export const enabledDomains = domainsManager.getEnabledDomains();
 
-function getAzureDevOpsClient(getAzureDevOpsToken: () => Promise<string>, userAgentComposer: UserAgentComposer): () => Promise<azdev.WebApi> {
+function getAzureDevOpsClient(getAzureDevOpsToken: () => Promise<string>, userAgentComposer: UserAgentComposer): () => Promise<WebApi> {
   return async () => {
     const accessToken = await getAzureDevOpsToken();
     // For PAT authentication, use Basic auth handler; for OAuth tokens, use Bearer handler
     const authHandler = argv.authentication === "pat"
-      ? azdev.getBasicHandler("PAT", accessToken)
-      : azdev.getBearerHandler(accessToken);
-    const connection = new azdev.WebApi(orgUrl, authHandler, undefined, {
+      ? getBasicHandler("PAT", accessToken)
+      : getBearerHandler(accessToken);
+    const connection = new WebApi(orgUrl, authHandler, undefined, {
       productName: "AzureDevOps.MCP",
       productVersion: packageVersion,
       userAgent: userAgentComposer.userAgent,

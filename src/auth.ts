@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 import { AzureCliCredential, ChainedTokenCredential, DefaultAzureCredential, TokenCredential } from "@azure/identity";
 import { AccountInfo, AuthenticationResult, PublicClientApplication } from "@azure/msal-node";
 import open from "open";
@@ -36,7 +39,7 @@ class OAuthAuthenticator {
           scopes,
           account: this.accountId,
         });
-      } catch (error) {
+      } catch {
         authResult = null;
       }
     }
@@ -66,6 +69,16 @@ function createAuthenticator(type: string, tenantId?: string): () => Promise<str
           throw new Error("AZURE_DEVOPS_PAT environment variable is not set. Please set it with your Personal Access Token.");
         }
         return pat;
+      };
+
+    case "envvar":
+      // Read token from fixed environment variable
+      return async () => {
+        const token = process.env["ADO_MCP_AUTH_TOKEN"];
+        if (!token) {
+          throw new Error("Environment variable 'ADO_MCP_AUTH_TOKEN' is not set or empty. Please set it with a valid Azure DevOps Personal Access Token.");
+        }
+        return token;
       };
 
     case "azcli":

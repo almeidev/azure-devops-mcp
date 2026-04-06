@@ -2,7 +2,6 @@
 // Licensed under the MIT License.
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { AccessToken } from "@azure/identity";
 import { WebApi } from "azure-devops-node-api";
 import { configureRepoTools, REPO_TOOLS } from "../../../src/tools/repositories";
 import { PullRequestStatus, GitVersionType, GitPullRequestQueryType, CommentThreadStatus } from "azure-devops-node-api/interfaces/GitInterfaces.js";
@@ -589,6 +588,25 @@ describe("repos tools", () => {
       );
       expect(result.isError).toBeFalsy();
     });
+
+    it("should reject update pull request with description over 4000 characters", async () => {
+      configureRepoTools(server, tokenProvider, connectionProvider, userAgentProvider);
+
+      const call = (server.tool as jest.Mock).mock.calls.find(([toolName]) => toolName === REPO_TOOLS.update_pull_request);
+      if (!call) throw new Error("repo_update_pull_request tool not registered");
+      const [, , , handler] = call;
+
+      const longDescription = "a".repeat(4001);
+
+      const params = {
+        repositoryId: "repo123",
+        pullRequestId: 123,
+        description: longDescription,
+      };
+
+      // Validation should fail due to description being too long
+      await expect(handler(params)).rejects.toThrow();
+    });
   });
 
   describe("repo_create_pull_request", () => {
@@ -729,6 +747,27 @@ describe("repos tools", () => {
         targetRefName: "refs/heads/main",
       };
       expect(result.content[0].text).toBe(JSON.stringify(expectedTrimmedPR, null, 2));
+    });
+
+    it("should reject pull request with description over 4000 characters", async () => {
+      configureRepoTools(server, tokenProvider, connectionProvider, userAgentProvider);
+
+      const call = (server.tool as jest.Mock).mock.calls.find(([toolName]) => toolName === REPO_TOOLS.create_pull_request);
+      if (!call) throw new Error("repo_create_pull_request tool not registered");
+      const [, , , handler] = call;
+
+      const longDescription = "a".repeat(4001);
+
+      const params = {
+        repositoryId: "repo123",
+        sourceRefName: "refs/heads/feature-branch",
+        targetRefName: "refs/heads/main",
+        title: "New Feature",
+        description: longDescription,
+      };
+
+      // Validation should fail due to description being too long
+      await expect(handler(params)).rejects.toThrow();
     });
   });
 
@@ -4243,6 +4282,102 @@ describe("repos tools", () => {
         undefined
       );
       expect(result.content[0].text).toBe(JSON.stringify(mockThread, null, 2));
+    });
+  });
+
+  describe("enhanced commit search functions", () => {
+    describe("repo_search_commits enhanced functionality", () => {
+      it("should search commits with enhanced filters", async () => {
+        configureRepoTools(server, tokenProvider, connectionProvider, userAgentProvider);
+
+        const call = (server.tool as jest.Mock).mock.calls.find(([toolName]) => toolName === REPO_TOOLS.search_commits);
+        if (!call) throw new Error("repo_search_commits tool not registered");
+        const [, , , handler] = call;
+
+        const mockCommits = [
+          {
+            commitId: "abc123",
+            comment: "Fix bug in authentication",
+            author: { name: "John Doe", email: "john@example.com" },
+            committer: { name: "John Doe", email: "john@example.com" },
+            push: { date: "2023-01-01T00:00:00Z" },
+          },
+        ];
+        mockGitApi.getCommits.mockResolvedValue(mockCommits);
+
+        const params = {
+          project: "test-project",
+          repository: "test-repo",
+          searchText: "authentication",
+          author: "John Doe",
+          fromDate: "2023-01-01T00:00:00Z",
+          toDate: "2023-12-31T23:59:59Z",
+          top: 10,
+        };
+
+        const result = await handler(params);
+
+        expect(mockGitApi.getCommits).toHaveBeenCalledWith(
+          "test-repo",
+          expect.objectContaining({
+            author: "John Doe",
+            fromDate: "2023-01-01T00:00:00Z",
+            toDate: "2023-12-31T23:59:59Z",
+          }),
+          "test-project",
+          undefined,
+          10
+        );
+
+        expect(result.content[0].text).toBe(JSON.stringify(mockCommits, null, 2));
+      });
+
+      it("should retrieve specific commits by IDs", async () => {
+        configureRepoTools(server, tokenProvider, connectionProvider, userAgentProvider);
+
+        const call = (server.tool as jest.Mock).mock.calls.find(([toolName]) => toolName === REPO_TOOLS.search_commits);
+        if (!call) throw new Error("repo_search_commits tool not registered");
+        const [, , , handler] = call;
+
+        const mockCommit1 = { commitId: "abc123", comment: "First commit" };
+        const mockCommit2 = { commitId: "def456", comment: "Second commit" };
+
+        mockGitApi.getCommits.mockResolvedValueOnce([mockCommit1]).mockResolvedValueOnce([mockCommit2]);
+
+        const params = {
+          project: "test-project",
+          repository: "test-repo",
+          commitIds: ["abc123", "def456"],
+          top: 10,
+        };
+
+        const result = await handler(params);
+
+        expect(mockGitApi.getCommits).toHaveBeenCalledTimes(2);
+        expect(mockGitApi.getCommits).toHaveBeenCalledWith(
+          "test-repo",
+          expect.objectContaining({
+            fromCommitId: "abc123",
+            toCommitId: "abc123",
+          }),
+          "test-project",
+          0,
+          1
+        );
+        expect(mockGitApi.getCommits).toHaveBeenCalledWith(
+          "test-repo",
+          expect.objectContaining({
+            fromCommitId: "def456",
+            toCommitId: "def456",
+          }),
+          "test-project",
+          0,
+          1
+        );
+
+        const expectedCommits = [mockCommit1, mockCommit2];
+        expect(result.content[0].text).toBe(JSON.stringify(expectedCommits, null, 2));
+      });
     });
   });
 });
