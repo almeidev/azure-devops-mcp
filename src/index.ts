@@ -59,7 +59,9 @@ const argv = yargs(hideBin(process.argv))
   .parseSync();
 
 export const orgName = argv.organization as string;
-const orgUrl = "https://dev.azure.com/" + orgName;
+const orgUrl = process.env.SERVER_URL
+  ? `${process.env.SERVER_URL}/${orgName}`
+  : `https://dev.azure.com/${orgName}`;
 
 const domainsManager = new DomainsManager(argv.domains);
 export const enabledDomains = domainsManager.getEnabledDomains();
@@ -67,8 +69,6 @@ export const enabledDomains = domainsManager.getEnabledDomains();
 function getAzureDevOpsClient(getAzureDevOpsToken: () => Promise<string>, userAgentComposer: UserAgentComposer, authType: string): () => Promise<WebApi> {
   return async () => {
     const accessToken = await getAzureDevOpsToken();
-    // For pat, accessToken is base64("{email}:{token}"). Decode to extract the token part,
-    // since getPersonalAccessTokenHandler prepends ":" internally and just needs the raw token.
     const authHandler = authType === "pat" ? getPersonalAccessTokenHandler(Buffer.from(accessToken, "base64").toString("utf8").split(":").slice(1).join(":")) : getBearerHandler(accessToken);
     const connection = new WebApi(orgUrl, authHandler, undefined, {
       productName: "AzureDevOps.MCP",
